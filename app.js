@@ -7,7 +7,7 @@
  *   клик по видео → пауза / воспроизведение
  */
 
-const API = 'https://tiktok-tg-player.ivandashchinsky.workers.dev';
+const API = 'https://tiktok-tg-player-api.onrender.com';
 const ALL = '__all__';
 
 const tg = window.Telegram?.WebApp;
