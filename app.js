@@ -367,17 +367,24 @@ function debugVideoSizes() {
   const cs = getComputedStyle(el.player);
   const vw = el.player.videoWidth;
   const vh = el.player.videoHeight;
-  // Реальный видимый прямоугольник кадра при object-fit:contain
   const contW = wrapRect.width, contH = wrapRect.height;
   const scale = Math.min(contW / vw, contH / vh);
   const fitW = Math.round(vw * scale), fitH = Math.round(vh * scale);
+
+  // Реально видимая доля кадра. Если <1 — часть видео физически обрезана.
+  const visW = Math.min(playerRect.width, wrapRect.width, window.innerWidth);
+  const visH = Math.min(playerRect.height, wrapRect.height, window.innerHeight);
+  const clippedX = playerRect.left < wrapRect.left - 1 || playerRect.right > wrapRect.right + 1;
+  const clippedY = playerRect.top < wrapRect.top - 1 || playerRect.bottom > wrapRect.bottom + 1;
+
   const msg =
     `окно: ${window.innerWidth}x${window.innerHeight}\n` +
-    `контейнер: ${Math.round(wrapRect.width)}x${Math.round(wrapRect.height)}\n` +
+    `контейнер rect: ${Math.round(wrapRect.width)}x${Math.round(wrapRect.height)} @ (${Math.round(wrapRect.left)},${Math.round(wrapRect.top)})\n` +
     `видео файл: ${vw}x${vh}\n` +
-    `#player CSS-блок: ${Math.round(playerRect.width)}x${Math.round(playerRect.height)}\n` +
-    `object-fit computed: ${cs.objectFit}\n` +
+    `#player rect: ${Math.round(playerRect.width)}x${Math.round(playerRect.height)} @ (${Math.round(playerRect.left)},${Math.round(playerRect.top)})\n` +
+    `object-fit: ${cs.objectFit} | transform: ${cs.transform}\n` +
     `ожидаемый кадр (contain): ${fitW}x${fitH}\n` +
+    `player ВЫХОДИТ за контейнер: X=${clippedX} Y=${clippedY}\n` +
     `fullscreen: ${tgFullscreen || !!document.fullscreenElement}`;
   alert(msg);
 }
