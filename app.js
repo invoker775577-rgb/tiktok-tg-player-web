@@ -189,20 +189,43 @@ function renderList() {
 }
 
 // ── Воспроизведение ──────────────────────────────────────────
+// Флаг: ждём достаточный буфер, прежде чем показать видео и запустить play.
+// Без этого браузер начинает играть с первых накачанных секунд и упирается
+// в подгрузку через 2-3 сек — рывок/подвисание. Ждём canplaythrough вместо
+// первого кадра: это означает "докачается без пауз на текущей скорости".
+let waitingForBuffer = false;
+let bufferTimeout;
+
+/** На части мобильных браузеров canplaythrough может не наступить вовсе
+ *  (потоковое видео без Content-Length) — не зависаем на спиннере вечно. */
+function revealAndPlay() {
+  if (!waitingForBuffer) return;
+  waitingForBuffer = false;
+  clearTimeout(bufferTimeout);
+  el.player.classList.add('visible');
+  el.spinner.hidden = true;
+  el.player.play().catch(() => { /* автоплей может быть зарезан — не падаем */ });
+}
+
 function playIndex(i) {
   if (i < 0 || i >= state.queue.length) return;
 
   const v = state.queue[i];
   state.index = i;
 
+  waitingForBuffer = true;
+  clearTimeout(bufferTimeout);
+  bufferTimeout = setTimeout(revealAndPlay, 8000);
+
   el.spinner.hidden = false;
   el.placeholder.style.display = 'none';
-  el.player.classList.add('visible');
+  el.player.classList.remove('visible');   // не показываем, пока не готово
 
+  el.player.pause();
   el.player.src = `${API}/api/video/${encodeURIComponent(v.file_id)}`;
   el.player.loop = state.rpt1;          // RPT1 — нативный повтор, без дёрганья
   el.player.volume = state.volume;
-  el.player.play().catch(() => { /* автоплей может быть зарезан — не падаем */ });
+  el.player.load();
 
   el.now.textContent = v.name;
   el.now.classList.add('playing');
@@ -320,11 +343,19 @@ el.list.addEventListener('keydown', (e) => {
 el.player.addEventListener('click', () => { haptic(); togglePlay(); });
 
 el.player.addEventListener('ended', () => { if (!state.rpt1) next(true); });
+
+// Буфер достаточен для непрерывного воспроизведения — теперь показываем и играем
+el.player.addEventListener('canplaythrough', revealAndPlay);
+
 el.player.addEventListener('playing', () => { el.spinner.hidden = true; syncPlayButton(); });
 el.player.addEventListener('pause', syncPlayButton);
 el.player.addEventListener('play', syncPlayButton);
-el.player.addEventListener('waiting', () => { el.spinner.hidden = false; });
+// waiting срабатывает и во время нашего намеренного ожидания буфера —
+// не дёргаем спиннер повторно, он уже показан с самого playIndex().
+el.player.addEventListener('waiting', () => { if (!waitingForBuffer) el.spinner.hidden = false; });
 el.player.addEventListener('error', () => {
+  waitingForBuffer = false;
+  clearTimeout(bufferTimeout);
   el.spinner.hidden = true;
   toast(`Не удалось воспроизвести: ${state.queue[state.index]?.name ?? ''}`);
 });
