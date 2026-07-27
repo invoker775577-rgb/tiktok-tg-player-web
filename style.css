@@ -1,0 +1,380 @@
+/* ── База ─────────────────────────────────────────────────── */
+:root {
+  --bg:        #0f1115;
+  --panel:     #171a21;
+  --panel-2:   #1d212a;
+  --border:    #262b36;
+  --text:      #d7dce5;
+  --text-dim:  #7a8496;
+  --accent:    #35c759;
+  --accent-2:  #a98bff;
+  --focus:     #4c8dff;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.4 var(--mono);
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
+}
+
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+
+/* Кольцо фокуса — доступность с клавиатуры */
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+#app {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 10px;
+  height: 100%;
+  padding: 10px;
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+}
+
+/* ── Боковая панель ───────────────────────────────────────── */
+#sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  gap: 10px;
+}
+
+.side-head { display: flex; align-items: center; justify-content: space-between; }
+.side-title { font-size: 12px; letter-spacing: .08em; color: var(--text-dim); }
+.side-title b { color: var(--text); }
+
+.side-controls { display: flex; gap: 8px; }
+
+#playlist-select {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.search {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  width: 100%;
+}
+.search::placeholder { color: var(--text-dim); }
+
+/* Список видео */
+.video-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  scrollbar-width: thin;
+}
+
+.video-item {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  position: relative;
+  transition: border-color .12s, background .12s;
+}
+.video-item:hover { border-color: #38405180; }
+.video-item.active { border-color: var(--focus); background: #1b2333; }
+
+.vi-name {
+  font-size: 12.5px;
+  word-break: break-all;
+  margin-bottom: 4px;
+}
+.vi-meta { font-size: 11px; color: var(--text-dim); }
+
+.vi-dot {
+  position: absolute;
+  left: 4px; top: 50%;
+  width: 5px; height: 5px;
+  margin-top: -2.5px;
+  border-radius: 50%;
+  background: #333a48;
+}
+.video-item.active .vi-dot { background: var(--focus); }
+
+.empty-note { color: var(--text-dim); font-size: 12px; padding: 16px 4px; text-align: center; }
+
+/* ── Сцена / плеер ────────────────────────────────────────── */
+#stage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  gap: 10px;
+}
+
+#video-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+
+#player {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: none;
+  background: #000;
+}
+#player.visible { display: block; }
+
+.placeholder { text-align: center; color: var(--text-dim); pointer-events: none; }
+.ph-title { font-size: 20px; margin-bottom: 8px; color: #4a5464; }
+.ph-sub { font-size: 13px; }
+
+.spinner {
+  position: absolute;
+  width: 34px; height: 34px;
+  border: 3px solid #2a3040;
+  border-top-color: var(--focus);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2s; }
+  .video-item { transition: none; }
+}
+
+/* ── Панель управления ────────────────────────────────────── */
+#controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+
+.ctl-group { display: flex; align-items: center; gap: 8px; }
+.now-group { margin-left: auto; }
+
+.btn {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 15px;
+  min-width: 46px;
+  transition: background .12s, border-color .12s;
+}
+.btn:hover { background: #232935; }
+
+.btn-play { background: var(--accent); border-color: var(--accent); color: #06210f; font-weight: 700; }
+.btn-play:hover { background: #2fb350; }
+
+.btn-toggle.on { background: var(--focus); border-color: var(--focus); color: #041428; font-weight: 700; }
+
+.btn-sm {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 7px 12px;
+  font-size: 12px;
+}
+.btn-sm:hover { background: #232935; }
+.btn-accent { background: var(--accent-2); border-color: var(--accent-2); color: #1a0f33; font-weight: 700; }
+
+.lbl { font-size: 11px; color: var(--text-dim); letter-spacing: .06em; }
+
+#volume { width: 110px; accent-color: var(--text-dim); }
+
+.now {
+  font-size: 12px;
+  color: var(--text-dim);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.now.playing { color: var(--text); }
+
+/* ── Модалка ──────────────────────────────────────────────── */
+/* [hidden] обязан побеждать display — иначе модалка висит поверх экрана */
+[hidden] { display: none !important; }
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: #000000b8;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  z-index: 50;
+}
+.modal-box {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+  width: 100%;
+  max-width: 400px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.modal-title { font-size: 14px; }
+.modal-body { overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.pl-option {
+  text-align: left;
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.pl-option:hover { background: #232935; }
+
+/* ── Тост ─────────────────────────────────────────────────── */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  background: #232935;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 12.5px;
+  z-index: 60;
+  max-width: 90vw;
+}
+
+/* ── Кнопка «Библиотека» — только на телефоне ─────────────── */
+#btn-library { display: none; }
+
+/* ── Мобильная раскладка ──────────────────────────────────── */
+@media (max-width: 760px) {
+  #app {
+    display: block;
+    padding: 0;
+    height: 100dvh;
+  }
+
+  /* Плеер на весь экран — как в TikTok */
+  #stage {
+    height: 100dvh;
+    gap: 0;
+  }
+
+  #video-wrap {
+    border: none;
+    border-radius: 0;
+    height: 100%;
+  }
+
+  #player { object-fit: contain; }
+
+  /* Панель управления поверх видео снизу */
+  #controls {
+    position: fixed;
+    left: 0; right: 0;
+    bottom: 0;
+    border: none;
+    border-radius: 16px 16px 0 0;
+    background: #12151ceb;
+    backdrop-filter: blur(12px);
+    padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+    gap: 10px;
+    justify-content: center;
+    z-index: 20;
+  }
+
+  .now-group {
+    margin-left: 0;
+    order: -1;
+    width: 100%;
+    justify-content: space-between;
+  }
+  .now { max-width: 55vw; }
+
+  .vol-group { flex: 1; min-width: 130px; }
+  #volume { flex: 1; width: auto; }
+
+  .btn { padding: 12px 18px; }   /* под палец */
+
+  /* Кнопка открытия библиотеки */
+  #btn-library {
+    display: inline-flex;
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top));
+    left: 10px;
+    z-index: 25;
+    background: #12151ceb;
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 10px 14px;
+  }
+
+  /* Библиотека — выезжающая снизу шторка */
+  #sidebar {
+    position: fixed;
+    left: 0; right: 0;
+    bottom: 0;
+    height: 78dvh;
+    border-radius: 16px 16px 0 0;
+    border-bottom: none;
+    z-index: 30;
+    transform: translateY(100%);
+    transition: transform .25s ease;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+  #sidebar.open { transform: translateY(0); }
+
+  /* Затемнение под шторкой */
+  #sheet-backdrop {
+    position: fixed;
+    inset: 0;
+    background: #000000a6;
+    z-index: 29;
+  }
+
+  .side-head { padding-top: 4px; }
+
+  /* Крупнее строки списка — попадать пальцем */
+  .video-item { padding: 13px 14px; }
+  .vi-name { font-size: 13px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #sidebar { transition: none; }
+}
