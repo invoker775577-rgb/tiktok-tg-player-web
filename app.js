@@ -282,7 +282,7 @@ function openPlaylistModal() {
 const closeModal = () => { el.modal.hidden = true; };
 
 async function createPlaylist() {
-  const name = prompt('Название плейлиста:')?.trim();
+  const name = prompt('Название нового сундука:')?.trim();
   if (!name) return;
   if (state.playlists[name]) { toast('Такой уже есть'); return; }
 
@@ -358,6 +358,37 @@ el.newPl.addEventListener('click', createPlaylist);
 el.add.addEventListener('click', openPlaylistModal);
 
 let tgFullscreen = false;
+
+// ВРЕМЕННО: показывает реальные размеры видео/контейнера — для диагностики
+// разного масштаба между обычным окном и fullscreen. Долгий тап/клик по "VOL".
+function debugVideoSizes() {
+  const wrapRect = el.player.parentElement.getBoundingClientRect();
+  const playerRect = el.player.getBoundingClientRect();
+  const cs = getComputedStyle(el.player);
+  const vw = el.player.videoWidth;
+  const vh = el.player.videoHeight;
+  const contW = wrapRect.width, contH = wrapRect.height;
+  const scale = Math.min(contW / vw, contH / vh);
+  const fitW = Math.round(vw * scale), fitH = Math.round(vh * scale);
+
+  // Реально видимая доля кадра. Если <1 — часть видео физически обрезана.
+  const visW = Math.min(playerRect.width, wrapRect.width, window.innerWidth);
+  const visH = Math.min(playerRect.height, wrapRect.height, window.innerHeight);
+  const clippedX = playerRect.left < wrapRect.left - 1 || playerRect.right > wrapRect.right + 1;
+  const clippedY = playerRect.top < wrapRect.top - 1 || playerRect.bottom > wrapRect.bottom + 1;
+
+  const msg =
+    `окно: ${window.innerWidth}x${window.innerHeight}\n` +
+    `контейнер rect: ${Math.round(wrapRect.width)}x${Math.round(wrapRect.height)} @ (${Math.round(wrapRect.left)},${Math.round(wrapRect.top)})\n` +
+    `видео файл: ${vw}x${vh}\n` +
+    `#player rect: ${Math.round(playerRect.width)}x${Math.round(playerRect.height)} @ (${Math.round(playerRect.left)},${Math.round(playerRect.top)})\n` +
+    `object-fit: ${cs.objectFit} | transform: ${cs.transform}\n` +
+    `ожидаемый кадр (contain): ${fitW}x${fitH}\n` +
+    `player ВЫХОДИТ за контейнер: X=${clippedX} Y=${clippedY}\n` +
+    `fullscreen: ${tgFullscreen || !!document.fullscreenElement}`;
+  alert(msg);
+}
+document.querySelector('.lbl')?.addEventListener('dblclick', debugVideoSizes);
 
 el.fullscreen.addEventListener('click', () => {
   // Внутри Telegram — родной метод клиента: браузерный Fullscreen API
