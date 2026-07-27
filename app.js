@@ -359,6 +359,24 @@ el.add.addEventListener('click', openPlaylistModal);
 
 let tgFullscreen = false;
 
+// ВРЕМЕННО: показывает реальные размеры видео/контейнера — для диагностики
+// разного масштаба между обычным окном и fullscreen. Долгий тап/клик по "VOL".
+function debugVideoSizes() {
+  const wrapRect = el.player.parentElement.getBoundingClientRect();
+  const vw = el.player.videoWidth;
+  const vh = el.player.videoHeight;
+  const cw = el.player.clientWidth;
+  const ch = el.player.clientHeight;
+  const msg =
+    `окно: ${window.innerWidth}x${window.innerHeight}\n` +
+    `контейнер: ${Math.round(wrapRect.width)}x${Math.round(wrapRect.height)}\n` +
+    `видео файл: ${vw}x${vh}\n` +
+    `видео на экране: ${cw}x${ch}\n` +
+    `fullscreen: ${tgFullscreen || !!document.fullscreenElement}`;
+  alert(msg);
+}
+document.querySelector('.lbl')?.addEventListener('dblclick', debugVideoSizes);
+
 el.fullscreen.addEventListener('click', () => {
   // Внутри Telegram — родной метод клиента: браузерный Fullscreen API
   // в его вебвью часто заблокирован политикой хоста и молча не срабатывает.
