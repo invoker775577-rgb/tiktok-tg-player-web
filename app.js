@@ -282,7 +282,7 @@ function openPlaylistModal() {
 const closeModal = () => { el.modal.hidden = true; };
 
 async function createPlaylist() {
-  const name = prompt('Как наречь новый свиток?')?.trim();
+  const name = prompt('Название нового сундука:')?.trim();
   if (!name) return;
   if (state.playlists[name]) { toast('Такой уже есть'); return; }
 
