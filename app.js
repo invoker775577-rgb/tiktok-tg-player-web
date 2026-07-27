@@ -282,7 +282,7 @@ function openPlaylistModal() {
 const closeModal = () => { el.modal.hidden = true; };
 
 async function createPlaylist() {
-  const name = prompt('Название плейлиста:')?.trim();
+  const name = prompt('Как наречь новый свиток?')?.trim();
   if (!name) return;
   if (state.playlists[name]) { toast('Такой уже есть'); return; }
 
@@ -357,12 +357,30 @@ el.refresh.addEventListener('click', () => { haptic(); loadLibrary(); });
 el.newPl.addEventListener('click', createPlaylist);
 el.add.addEventListener('click', openPlaylistModal);
 
+let tgFullscreen = false;
+
 el.fullscreen.addEventListener('click', () => {
+  // Внутри Telegram — родной метод клиента: браузерный Fullscreen API
+  // в его вебвью часто заблокирован политикой хоста и молча не срабатывает.
+  if (tg?.requestFullscreen) {
+    if (tgFullscreen) tg.exitFullscreen();
+    else tg.requestFullscreen();
+    return;
+  }
+  // Открыто как обычная веб-страница — обычный браузерный API
   if (document.fullscreenElement) document.exitFullscreen();
   else document.documentElement.requestFullscreen().catch(() => toast('Полноэкранный режим недоступен'));
 });
 
+tg?.onEvent?.('fullscreenChanged', () => {
+  tgFullscreen = !!tg.isFullscreen;
+  el.fullscreen.textContent = tgFullscreen ? '⛶ Exit fullscreen' : '⛶ Fullscreen';
+});
+
+tg?.onEvent?.('fullscreenFailed', () => toast('Полноэкранный режим недоступен в этой версии Telegram'));
+
 document.addEventListener('fullscreenchange', () => {
+  if (tg?.requestFullscreen) return;   // управляется событиями tg выше
   el.fullscreen.textContent = document.fullscreenElement ? '⛶ Exit fullscreen' : '⛶ Fullscreen';
 });
 el.modalCancel.addEventListener('click', closeModal);
