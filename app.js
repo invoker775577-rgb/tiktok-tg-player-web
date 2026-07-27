@@ -372,20 +372,9 @@ el.fullscreen.addEventListener('click', () => {
   else document.documentElement.requestFullscreen().catch(() => toast('Полноэкранный режим недоступен'));
 });
 
-// После входа/выхода из fullscreen браузер иногда не пересчитывает layout
-// вьюпорта мгновенно — видео "зумит" по старым размерам ещё один кадр.
-// Форсируем reflow контейнера плеера на следующем тике.
-function fixVideoLayoutAfterFullscreenToggle() {
-  requestAnimationFrame(() => {
-    el.player.style.width = '99.9%';
-    requestAnimationFrame(() => { el.player.style.width = '100%'; });
-  });
-}
-
 tg?.onEvent?.('fullscreenChanged', () => {
   tgFullscreen = !!tg.isFullscreen;
   el.fullscreen.textContent = tgFullscreen ? '⛶ Exit fullscreen' : '⛶ Fullscreen';
-  fixVideoLayoutAfterFullscreenToggle();
 });
 
 tg?.onEvent?.('fullscreenFailed', () => toast('Полноэкранный режим недоступен в этой версии Telegram'));
@@ -393,7 +382,6 @@ tg?.onEvent?.('fullscreenFailed', () => toast('Полноэкранный реж
 document.addEventListener('fullscreenchange', () => {
   if (tg?.requestFullscreen) return;   // управляется событиями tg выше
   el.fullscreen.textContent = document.fullscreenElement ? '⛶ Exit fullscreen' : '⛶ Fullscreen';
-  fixVideoLayoutAfterFullscreenToggle();
 });
 el.modalCancel.addEventListener('click', closeModal);
 el.modal.addEventListener('click', (e) => { if (e.target === el.modal) closeModal(); });
