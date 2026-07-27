@@ -32,7 +32,7 @@ const el = {
   play: $('btn-play'), prev: $('btn-prev'), next: $('btn-next'),
   rpt1: $('btn-rpt1'), loop: $('btn-loop'),
   volume: $('volume'), volVal: $('vol-val'),
-  now: $('now-playing'), add: $('btn-add'),
+  now: $('now-playing'), add: $('btn-add'), fullscreen: $('btn-fullscreen'),
   modal: $('modal'), modalTitle: $('modal-title'), modalBody: $('modal-body'), modalCancel: $('modal-cancel'),
   toast: $('toast'),
   sidebar: $('sidebar'), libBtn: $('btn-library'), backdrop: $('sheet-backdrop'),
@@ -356,6 +356,15 @@ el.select.addEventListener('change', rebuildQueue);
 el.refresh.addEventListener('click', () => { haptic(); loadLibrary(); });
 el.newPl.addEventListener('click', createPlaylist);
 el.add.addEventListener('click', openPlaylistModal);
+
+el.fullscreen.addEventListener('click', () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch(() => toast('Полноэкранный режим недоступен'));
+});
+
+document.addEventListener('fullscreenchange', () => {
+  el.fullscreen.textContent = document.fullscreenElement ? '⛶ Exit fullscreen' : '⛶ Fullscreen';
+});
 el.modalCancel.addEventListener('click', closeModal);
 el.modal.addEventListener('click', (e) => { if (e.target === el.modal) closeModal(); });
 
