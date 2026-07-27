@@ -3,33 +3,35 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<title>Player</title>
+<title>⛏ Тайник</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
+<div class="grain"></div>
+
 <div id="app">
 
   <!-- Открывает шторку с библиотекой (только на телефоне) -->
-  <button id="btn-library" class="btn-sm">☰ Библиотека</button>
+  <button id="btn-library" class="btn-sm">☰ Тайник</button>
   <div id="sheet-backdrop" hidden></div>
 
   <!-- ── Боковая панель: библиотека ─────────────────────────── -->
   <aside id="sidebar">
     <header class="side-head">
-      <span class="side-title">VIDEOS <b id="count">(0)</b></span>
-      <button id="btn-refresh" class="btn-sm">Refresh</button>
+      <span class="side-title">⛏ Тайник <b id="count">(0)</b></span>
+      <button id="btn-refresh" class="btn-sm">⟳ Разведать</button>
     </header>
 
     <div class="side-controls">
       <select id="playlist-select">
-        <option value="__all__">All Videos</option>
+        <option value="__all__">Все находки</option>
       </select>
-      <button id="btn-new-playlist" class="btn-sm btn-accent">+ New</button>
+      <button id="btn-new-playlist" class="btn-sm btn-accent">+ Сундук</button>
     </div>
 
-    <input id="search" class="search" type="search" placeholder="Поиск…" autocomplete="off">
+    <input id="search" class="search" type="search" placeholder="Искать находку…" autocomplete="off">
 
     <ul id="video-list" class="video-list"></ul>
   </aside>
@@ -39,8 +41,8 @@
     <div id="video-wrap">
       <video id="player" playsinline webkit-playsinline preload="metadata"></video>
       <div id="placeholder" class="placeholder">
-        <div class="ph-title">[ no video ]</div>
-        <div class="ph-sub">выбери файл в списке</div>
+        <div class="ph-title">Пещера темна и пуста</div>
+        <div class="ph-sub">выбери находку в тайнике</div>
       </div>
       <div id="spinner" class="spinner" hidden></div>
     </div>
@@ -64,9 +66,9 @@
       </div>
 
       <div class="ctl-group now-group">
-        <span id="now-playing" class="now">nothing playing</span>
-        <button id="btn-fullscreen" class="btn-sm" title="Развернуть на весь экран">⛶ Fullscreen</button>
-        <button id="btn-add" class="btn-sm">+ playlist</button>
+        <span id="now-playing" class="now">тишина в подземелье…</span>
+        <button id="btn-fullscreen" class="btn-sm" title="Развернуть на весь экран">⛶ На весь экран</button>
+        <button id="btn-add" class="btn-sm">+ Сундук</button>
       </div>
     </div>
   </main>
@@ -76,10 +78,10 @@
 <!-- ── Модалка выбора плейлиста ─────────────────────────────── -->
 <div id="modal" class="modal" hidden>
   <div class="modal-box">
-    <div id="modal-title" class="modal-title">Добавить в плейлист</div>
+    <div id="modal-title" class="modal-title">Убрать в сундук</div>
     <div id="modal-body" class="modal-body"></div>
     <div class="modal-actions">
-      <button id="modal-cancel" class="btn-sm">Отмена</button>
+      <button id="modal-cancel" class="btn-sm">Закрыть</button>
     </div>
   </div>
 </div>
