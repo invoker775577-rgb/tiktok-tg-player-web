@@ -363,15 +363,21 @@ let tgFullscreen = false;
 // разного масштаба между обычным окном и fullscreen. Долгий тап/клик по "VOL".
 function debugVideoSizes() {
   const wrapRect = el.player.parentElement.getBoundingClientRect();
+  const playerRect = el.player.getBoundingClientRect();
+  const cs = getComputedStyle(el.player);
   const vw = el.player.videoWidth;
   const vh = el.player.videoHeight;
-  const cw = el.player.clientWidth;
-  const ch = el.player.clientHeight;
+  // Реальный видимый прямоугольник кадра при object-fit:contain
+  const contW = wrapRect.width, contH = wrapRect.height;
+  const scale = Math.min(contW / vw, contH / vh);
+  const fitW = Math.round(vw * scale), fitH = Math.round(vh * scale);
   const msg =
     `окно: ${window.innerWidth}x${window.innerHeight}\n` +
     `контейнер: ${Math.round(wrapRect.width)}x${Math.round(wrapRect.height)}\n` +
     `видео файл: ${vw}x${vh}\n` +
-    `видео на экране: ${cw}x${ch}\n` +
+    `#player CSS-блок: ${Math.round(playerRect.width)}x${Math.round(playerRect.height)}\n` +
+    `object-fit computed: ${cs.objectFit}\n` +
+    `ожидаемый кадр (contain): ${fitW}x${fitH}\n` +
     `fullscreen: ${tgFullscreen || !!document.fullscreenElement}`;
   alert(msg);
 }
