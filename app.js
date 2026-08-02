@@ -73,10 +73,21 @@ function haptic(type = 'light') {
 }
 
 // ── Загрузка библиотеки ──────────────────────────────────────
-async function loadLibrary() {
+// Render (бесплатный тариф) засыпает без запросов и просыпается до ~50 сек.
+// Раньше при открытии приложения именно в это окно loadLibrary() падала
+// один раз и молча оставляла пустой список — выглядело как "приложение
+// умерло", хотя сервер был жив и данные целы. Теперь: до 6 попыток с
+// растущей паузой, с явным статусом на экране вместо тишины.
+async function loadLibrary(attempt = 1) {
+  const MAX_ATTEMPTS = 6;
+
   try {
-    const res = await fetch(`${API}/api/library`);
+    const res = await fetch(`${API}/api/library`, { signal: AbortSignal.timeout(20_000) });
+
+    // 503 — сервер жив, но библиотека ещё грузится с GitHub (см. api-render/server.js)
+    if (res.status === 503) throw new Error('библиотека ещё загружается на сервере');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
     const data = await res.json();
 
     state.videos = Array.isArray(data.videos) ? data.videos : [];
@@ -86,7 +97,13 @@ async function loadLibrary() {
     rebuildQueue();
     toast(`Загружено: ${state.videos.length} видео`);
   } catch (e) {
-    toast(`Ошибка загрузки: ${e.message}`);
+    if (attempt >= MAX_ATTEMPTS) {
+      toast(`Не загрузилось: ${e.message}. Нажми Refresh.`);
+      return;
+    }
+    const delay = Math.min(attempt * 4000, 15_000); // 4s, 8s, 12s, 15s, 15s
+    toast(`Сервер просыпается… попытка ${attempt}/${MAX_ATTEMPTS}`);
+    setTimeout(() => loadLibrary(attempt + 1), delay);
   }
 }
 
