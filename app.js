@@ -1,498 +1,453 @@
-/**
- * TikTok Player — Mini App
- *
- * Логика перенесена из десктопного video_player.py:
- *   single_loop   → RPT1  (одно видео по кругу)
- *   loop_callback → LOOP  (по кругу весь список)
- *   клик по видео → пауза / воспроизведение
- */
-
+import { clampRate, nextPlayable } from './player-core.mjs';
 const API = 'https://tiktok-tg-player-api.onrender.com';
 const ALL = '__all__';
-
-const tg = window.Telegram?.WebApp;
-
-// ── Состояние ────────────────────────────────────────────────
-const state = {
-  videos: [],       // вся библиотека
-  playlists: {},    // { имя: [имя_файла, ...] }
-  queue: [],        // то, что реально играем (с учётом плейлиста и поиска)
-  index: -1,        // позиция в queue
-  rpt1: false,
-  loop: false,
-  volume: 0.7,
-};
-
-// ── DOM ──────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
-const el = {
-  list: $('video-list'), count: $('count'), search: $('search'),
-  select: $('playlist-select'), refresh: $('btn-refresh'), newPl: $('btn-new-playlist'),
-  player: $('player'), placeholder: $('placeholder'), spinner: $('spinner'),
-  play: $('btn-play'), prev: $('btn-prev'), next: $('btn-next'),
-  rpt1: $('btn-rpt1'), loop: $('btn-loop'),
-  volume: $('volume'), volVal: $('vol-val'),
-  now: $('now-playing'), add: $('btn-add'), fullscreen: $('btn-fullscreen'),
-  modal: $('modal'), modalTitle: $('modal-title'), modalBody: $('modal-body'), modalCancel: $('modal-cancel'),
-  toast: $('toast'),
-  sidebar: $('sidebar'), libBtn: $('btn-library'), backdrop: $('sheet-backdrop'),
+const tg = window.Telegram?.WebApp;
+const storage = { get(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }, set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} } };
+let accessKey = '';
+try { accessKey = sessionStorage.getItem('player-access') || ''; } catch {}
+const prefs = storage.get('player-preferences', {});
+const state = { videos: [], playlists: {}, queue: [], current: null, failed: new Set(), rate: clampRate(prefs.rate), volume: Number.isFinite(prefs.volume) ? Math.max(0, Math.min(1, prefs.volume)) : .7, rpt1: !!prefs.rpt1, loop: prefs.loop !== false, audio: false, want: false, loading: false, retry: 0, generation: 0, lastProgress: Date.now(), position: 0 };
+const media = () => state.audio ? $('audio-player') : $('player');
+const savePrefs = () => storage.set('player-preferences', { rate: state.rate, volume: state.volume, rpt1: state.rpt1, loop: state.loop });
+const time = (seconds) => Number.isFinite(seconds) ? `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}` : '0:00';
+const size = (bytes) => `${(bytes / 1048576).toFixed(1)} МБ`;
+const node = (tag, text, className) => { const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (className) element.className = className; return element; };
+const status = (text) => { $('playback-status').textContent = text; };
+let toastTimer;
+function toast(message, action, label = 'Отменить') {
+  $('toast-message').textContent = message;
+  $('toast').hidden = false;
+  $('toast-action').hidden = !action;
+  $('toast-action').textContent = label;
+  $('toast-action').onclick = async () => { $('toast').hidden = true; try { await action(); } catch (e) { toast(e.message); } };
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { $('toast').hidden = true; }, action ? 15000 : 6000);
+}
+$('toast-close').onclick = () => { $('toast').hidden = true; };
+function headers() { return { ...(accessKey ? { 'x-ingest-key': accessKey } : {}), ...(tg?.initData ? { 'x-telegram-init-data': tg.initData } : {}) }; }
+async function request(path, options = {}) {
+  const response = await fetch(API + path, { ...options, headers: { ...headers(), ...options.headers }, signal: options.signal || AbortSignal.timeout(30000) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error(data.error || `Ошибка соединения (${response.status})`), { status: response.status });
+  return data;
+}
+let accessChecked = false;
+function showModal(title) {
+  $('modal-title').textContent = title;
+  $('modal-body').replaceChildren();
+  if (!$('modal').open) $('modal').showModal();
+  return $('modal-body');
+}
+function accessDialog() {
+  const body = showModal('Доступ к коллекции');
+  body.append(node('p', 'В Telegram владельца доступ подключается автоматически. Для добавления и удаления в обычном браузере введи ключ загрузчика (ingest_key из config.json).'));
+  const form = node('form'), input = node('input'), submit = node('button', 'Подключить', 'accent'), note = node('p');
+  input.type = 'password'; input.placeholder = 'Ключ доступа'; input.autocomplete = 'off'; input.required = true; input.setAttribute('aria-label', 'Ключ доступа');
+  form.append(input, submit, note); body.append(form);
+  form.onsubmit = async (event) => {
+    event.preventDefault(); submit.disabled = true;
+    const previous = accessKey; accessKey = input.value.trim();
+    try { await request('/api/access'); accessChecked = true; try { sessionStorage.setItem('player-access', accessKey); } catch {} $('modal').close(); toast('Доступ подключён. Можно добавлять и удалять эдиты.'); }
+    catch (e) { accessKey = previous; note.textContent = e.message; }
+    finally { submit.disabled = false; }
+  };
+  const forget = node('button', 'Отключить ключ в этом браузере', 'subtle');
+  forget.onclick = () => { accessKey = ''; accessChecked = false; try { sessionStorage.removeItem('player-access'); } catch {} $('modal').close(); toast('Ключ отключён'); };
+  body.append(forget);
+}
+async function ensureAccess() {
+  if (accessChecked) return true;
+  try { await request('/api/access'); accessChecked = true; return true; }
+  catch (e) { if (e.status === 401) { accessDialog(); } else toast(e.message); return false; }
+}
+function write(path, method, data) { return request(path, { method, headers: { 'content-type': 'application/json' }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) }); }
+$('btn-access').onclick = accessDialog;
+$('modal-close').onclick = () => $('modal').close();
+for (const dialog of [$('modal'), $('upload-dialog')]) dialog.addEventListener('click', (event) => { if (event.target === dialog) { const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close(); } });
+
+let loadTask;
+function applyLibrary(data) {
+  if (!Array.isArray(data?.videos) || !data.playlists || typeof data.playlists !== 'object') return;
+  state.videos = data.videos;
+  state.playlists = data.playlists;
+  renderSelects(); rebuildQueue();
+}
+async function loadLibrary() {
+  if (loadTask) return loadTask;
+  loadTask = (async () => {
+    $('btn-refresh').disabled = true;
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      $('connection').textContent = attempt === 1 ? 'Обновляем коллекцию…' : `Подключаемся · ${attempt}/6`;
+      try {
+        const data = await request('/api/library');
+        applyLibrary(data); storage.set('player-library', data);
+        $('connection').textContent = `${state.videos.length} эдитов · онлайн`;
+        return;
+      } catch (e) {
+        if (!navigator.onLine || attempt === 6) { $('connection').textContent = 'Нет связи · нажми ↻'; toast('Не удалось обновить коллекцию. Проверь интернет и нажми ↻.'); return; }
+        await new Promise((resolve) => setTimeout(resolve, Math.min(attempt * 2000, 8000)));
+      }
+    }
+  })().finally(() => { loadTask = null; $('btn-refresh').disabled = false; });
+  return loadTask;
+}
+function renderSelects() {
+  const current = $('playlist-select').value || ALL;
+  const upload = $('upload-playlist').value;
+  $('playlist-select').replaceChildren(new Option(`Все эдиты (${state.videos.length})`, ALL));
+  $('upload-playlist').replaceChildren(new Option('Общую коллекцию', ''));
+  for (const [name, items] of Object.entries(state.playlists)) {
+    $('playlist-select').add(new Option(`${name} (${items.length})`, name));
+    $('upload-playlist').add(new Option(name, name));
+  }
+  $('playlist-select').value = Object.hasOwn(state.playlists, current) ? current : ALL;
+  $('upload-playlist').value = Object.hasOwn(state.playlists, upload) ? upload : '';
+  $('mobile-count').textContent = state.videos.length;
+}
+function rebuildQueue() {
+  const selected = $('playlist-select').value, query = $('search').value.trim().toLocaleLowerCase();
+  const byName = new Map(state.videos.map((v) => [v.name, v]));
+  state.queue = (selected === ALL ? state.videos : (state.playlists[selected] || []).map((name) => byName.get(name)).filter(Boolean)).filter((v) => v.name.toLocaleLowerCase().includes(query));
+  renderList();
+}
+function renderList() {
+  $('count').textContent = state.queue.length;
+  const fragment = document.createDocumentFragment();
+  for (const video of state.queue) {
+    const item = node('li', undefined, 'video-item'); item.dataset.id = video.file_id; item.dataset.name = video.name;
+    item.classList.toggle('active', video.name === state.current?.name);
+    item.classList.toggle('broken', state.failed.has(video.file_id));
+    const play = node('button', undefined, 'item-play'); play.setAttribute('aria-label', `Смотреть ${video.name}`);
+    play.append(node('span', video.name, 'vi-name'), node('span', `${state.failed.has(video.file_id) ? 'Пропущен · ' : ''}${time(video.duration)} · ${size(video.size)}`, 'vi-meta'));
+    const remove = node('button', '×', 'item-delete'); remove.title = 'Удалить в один клик'; remove.setAttribute('aria-label', `Удалить ${video.name}`);
+    item.append(play, remove); fragment.append(item);
+  }
+  if (!state.queue.length) fragment.append(node('li', state.videos.length ? 'Ничего не найдено. Попробуй другой запрос.' : 'Здесь появятся твои эдиты. Нажми «Добавить».', 'empty-note'));
+  $('video-list').replaceChildren(fragment);
+}
+function updateActive() {
+  for (const item of $('video-list').children) {
+    const active = item.dataset.name === state.current?.name;
+    item.classList.toggle('active', active);
+    item.classList.toggle('broken', state.failed.has(item.dataset.id));
+    item.querySelector('.item-play')?.setAttribute('aria-current', active ? 'true' : 'false');
+  }
+  $('btn-retry-broken').hidden = !state.failed.size;
+}
+const openSheet = () => { $('sidebar').classList.add('open'); $('sheet-backdrop').hidden = false; $('btn-library').setAttribute('aria-expanded', 'true'); };
+const closeSheet = () => { $('sidebar').classList.remove('open'); $('sheet-backdrop').hidden = true; $('btn-library').setAttribute('aria-expanded', 'false'); };
+$('btn-library').onclick = openSheet; $('btn-close-library').onclick = closeSheet; $('sheet-backdrop').onclick = closeSheet;
+$('video-list').onclick = (event) => {
+  const item = event.target.closest('.video-item'); if (!item) return;
+  const video = state.queue.find((v) => v.name === item.dataset.name); if (!video) return;
+  if (event.target.closest('.item-delete')) { void removeVideo(video); return; }
+  state.failed.delete(video.file_id); playVideo(video); closeSheet();
+};
+$('btn-retry-broken').onclick = () => { state.failed.clear(); updateActive(); toast('Пропущенные эдиты снова доступны в очереди'); };
+$('playlist-select').onchange = rebuildQueue;
+let searchTimer;
+$('search').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(rebuildQueue, 120); };
+$('btn-refresh').onclick = loadLibrary;
+
+let preloaded = '', wakeLock;
+function applyMediaSettings() {
+  for (const target of [$('player'), $('audio-player')]) { target.volume = state.volume; target.defaultPlaybackRate = state.rate; target.playbackRate = state.rate; target.loop = state.rpt1; }
+  for (const [id, value] of [['btn-rpt1', state.rpt1], ['btn-loop', state.loop], ['btn-audio', state.audio]]) $(id).setAttribute('aria-pressed', String(value));
+  $('btn-speed').textContent = `${state.rate}×`; $('speed-value').textContent = `${state.rate}×`; $('volume').value = state.volume * 100;
+  for (const button of $('speed-presets').children) button.setAttribute('aria-pressed', String(Number(button.dataset.rate) === state.rate));
+}
+function updateSession() {
+  if (!navigator.mediaSession) return;
+  try {
+    navigator.mediaSession.playbackState = media().paused ? 'paused' : 'playing';
+    const duration = media().duration;
+    if (Number.isFinite(duration) && duration > 0) navigator.mediaSession.setPositionState?.({ duration, playbackRate: state.rate, position: Math.max(0, Math.min(duration, media().currentTime)) });
+  } catch {}
+}
+function syncPlay() {
+  const playing = !media().paused;
+  $('btn-play').textContent = playing ? 'Ⅱ' : '▶';
+  $('btn-play').setAttribute('aria-label', playing ? 'Пауза' : 'Воспроизвести');
+  updateSession();
+}
+async function acquireWakeLock() {
+  if (!state.audio && !media().paused && document.visibilityState === 'visible' && !wakeLock) { try { wakeLock = await navigator.wakeLock?.request('screen'); wakeLock?.addEventListener('release', () => { wakeLock = null; }); } catch {} }
+}
+function releaseWakeLock() { void wakeLock?.release().catch(() => {}); wakeLock = null; }
+function tryPlay() {
+  const generation = state.generation;
+  state.want = true; state.lastProgress = Date.now();
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}
+  media().play().catch((failure) => {
+    if (generation !== state.generation || failure.name === 'AbortError') return;
+    if (failure.name === 'NotAllowedError') { state.want = false; state.loading = false; $('spinner').hidden = true; status('НАЖМИ ▶ ДЛЯ ВОСПРОИЗВЕДЕНИЯ'); syncPlay(); }
+    else if (media().error) failVideo();
+  });
+}
+function playVideo(video, { retry = false, position = 0, autoplay = true } = {}) {
+  state.generation++; state.loading = true;
+  $('player').pause(); $('audio-player').pause();
+  state.current = video; state.retry = retry ? state.retry + 1 : 0; state.position = position; state.lastProgress = Date.now(); state.want = autoplay;
+  const target = media();
+  target.src = `${API}/api/video/${encodeURIComponent(video.file_id)}`;
+  applyMediaSettings(); target.load();
+  $('player').classList.remove('visible'); $('placeholder').hidden = true; $('audio-cover').hidden = !state.audio; $('spinner').hidden = !autoplay;
+  $('now-playing').textContent = video.name; $('current-time').textContent = time(position); $('duration').textContent = time(video.duration); $('seek').value = 0; $('seek').disabled = true;
+  status(autoplay ? 'ЗАГРУЖАЕМ ЭДИТ' : 'ПАУЗА'); updateActive();
+  if (navigator.mediaSession && window.MediaMetadata) navigator.mediaSession.metadata = new MediaMetadata({ title: video.name.replace(/\.[^.]+$/, ''), artist: 'Тайник', album: $('playlist-select').value === ALL ? 'Коллекция эдитов' : $('playlist-select').value });
+  if (autoplay) tryPlay();
+  else state.loading = false;
+  syncPlay();
+}
+function advance({ direction = 1, auto = false } = {}) {
+  const index = state.queue.findIndex((v) => v.name === state.current?.name);
+  const at = nextPlayable(state.queue, index, state.failed, { direction, wrap: !auto || state.loop });
+  if (at < 0) {
+    state.want = false; state.loading = false; media().pause(); $('spinner').hidden = true;
+    status(state.failed.size >= state.queue.length && state.queue.length ? 'НЕТ ДОСТУПНЫХ ЭДИТОВ' : 'КОЛЛЕКЦИЯ ЗАКОНЧИЛАСЬ'); syncPlay();
+    return;
+  }
+  playVideo(state.queue[at]);
+}
+let handlingFailure = false;
+function failVideo(stalled = false) {
+  if (!state.current || handlingFailure || !state.want) return;
+  if (!navigator.onLine) { status('НЕТ СЕТИ · ЖДЁМ ПОДКЛЮЧЕНИЯ'); $('spinner').hidden = true; return; }
+  handlingFailure = true;
+  try {
+    if ((stalled || media().error?.code === 2) && state.retry < 1) {
+      const position = media().currentTime || state.position; playVideo(state.current, { retry: true, position }); status('ПОВТОРНОЕ ПОДКЛЮЧЕНИЕ'); return;
+    }
+    const failed = state.current; state.failed.add(failed.file_id); updateActive();
+    toast(`Эдит недоступен — пропускаем: ${failed.name}`);
+    advance({ auto: true });
+  } finally { handlingFailure = false; }
+}
+function togglePlay() {
+  if (!state.current) { advance(); return; }
+  if (media().paused) { if (media().error) { state.failed.delete(state.current.file_id); playVideo(state.current); } else tryPlay(); }
+  else { state.want = false; state.loading = false; media().pause(); $('spinner').hidden = true; status('ПАУЗА'); }
+}
+function preloadNext() {
+  if (uploadsRunning || state.audio || navigator.connection?.saveData || /2g/.test(navigator.connection?.effectiveType || '') || !state.current) return;
+  const target = media(), duration = target.duration;
+  if (!Number.isFinite(duration) || !target.buffered.length || target.buffered.end(target.buffered.length - 1) < duration - 1) return;
+  const at = nextPlayable(state.queue, state.queue.findIndex((v) => v.name === state.current.name), state.failed, { wrap: state.loop });
+  const next = state.queue[at];
+  if (!next || next.file_id === state.current.file_id || preloaded === next.file_id) return;
+  preloaded = next.file_id;
+  $('preload-player').src = `${API}/api/video/${encodeURIComponent(next.file_id)}`;
+  $('preload-player').load();
+}
+for (const target of [$('player'), $('audio-player')]) {
+  const active = (callback) => () => { if (target === media()) callback(); };
+  target.addEventListener('loadedmetadata', active(() => {
+    applyMediaSettings();
+    if (state.position > 0 && Number.isFinite(target.duration)) target.currentTime = Math.min(state.position, Math.max(0, target.duration - .1));
+    $('duration').textContent = time(target.duration); $('seek').disabled = !Number.isFinite(target.duration);
+  }));
+  target.addEventListener('loadeddata', active(() => { $('player').classList.add('visible'); }));
+  target.addEventListener('playing', active(() => { state.loading = false; state.lastProgress = Date.now(); $('spinner').hidden = true; $('player').classList.add('visible'); status(state.audio ? 'ИГРАЕТ В ФОНОВОМ РЕЖИМЕ' : 'СЕЙЧАС ИГРАЕТ'); syncPlay(); void acquireWakeLock(); }));
+  target.addEventListener('play', active(syncPlay));
+  target.addEventListener('pause', active(() => { syncPlay(); releaseWakeLock(); if (!state.loading && !target.ended && !target.error && state.current && !state.failed.has(state.current.file_id)) { state.want = false; status('ПАУЗА'); } }));
+  target.addEventListener('waiting', active(() => { if (state.want) { $('spinner').hidden = false; status('БУФЕРИЗАЦИЯ…'); } }));
+  target.addEventListener('timeupdate', active(() => {
+    if (Math.abs(target.currentTime - state.position) > .05) state.lastProgress = Date.now();
+    state.position = target.currentTime; $('current-time').textContent = time(target.currentTime);
+    if (Number.isFinite(target.duration) && target.duration > 0) $('seek').value = target.currentTime / target.duration * 1000;
+    updateSession();
+  }));
+  target.addEventListener('progress', active(() => { if (target.buffered.length && Number.isFinite(target.duration)) $('seek').style.setProperty('--buffered', `${target.buffered.end(target.buffered.length - 1) / target.duration * 100}%`); preloadNext(); }));
+  target.addEventListener('ended', active(() => { if (!state.rpt1) advance({ auto: true }); }));
+  target.addEventListener('error', active(() => { if (target.error) failVideo(); }));
+}
+setInterval(() => {
+  if (!state.current || !state.want || !navigator.onLine || document.hidden || (media().paused && !state.loading)) return;
+  if (Date.now() - state.lastProgress > 30000) failVideo(true);
+}, 2000);
+$('player').onclick = togglePlay;
+$('btn-play').onclick = togglePlay; $('btn-start').onclick = () => advance();
+$('btn-next').onclick = () => advance(); $('btn-prev').onclick = () => advance({ direction: -1 });
+$('seek').oninput = () => { if (Number.isFinite(media().duration)) { media().currentTime = Number($('seek').value) / 1000 * media().duration; state.lastProgress = Date.now(); updateSession(); } };
+$('volume').oninput = () => { state.volume = Number($('volume').value) / 100; applyMediaSettings(); savePrefs(); };
+for (const [id, key] of [['btn-rpt1', 'rpt1'], ['btn-loop', 'loop']]) $(id).onclick = () => { state[key] = !state[key]; applyMediaSettings(); savePrefs(); };
+const setRate = (value) => { state.rate = clampRate(value); applyMediaSettings(); savePrefs(); updateSession(); };
+for (const rate of [.5, .75, 1, 1.25, 1.5, 1.75, 2, 2.5]) { const button = node('button', String(rate)); button.dataset.rate = rate; button.onclick = () => setRate(rate); $('speed-presets').append(button); }
+$('speed-minus').onclick = () => setRate(state.rate - .1); $('speed-plus').onclick = () => setRate(state.rate + .1);
+const closeSpeed = () => { $('speed-panel').hidden = true; $('btn-speed').setAttribute('aria-expanded', 'false'); };
+$('btn-speed').onclick = () => { $('speed-panel').hidden = !$('speed-panel').hidden; $('btn-speed').setAttribute('aria-expanded', String(!$('speed-panel').hidden)); };
+document.addEventListener('click', (event) => { if (!event.target.closest('.speed-anchor')) closeSpeed(); });
+$('btn-audio').onclick = () => {
+  const position = media().currentTime || 0, autoplay = !media().paused;
+  state.loading = true; media().pause(); state.audio = !state.audio;
+  $('background-note').hidden = !state.audio; releaseWakeLock();
+  if (state.current) playVideo(state.current, { position, autoplay });
+  else { state.loading = false; applyMediaSettings(); }
+};
+$('btn-browser').onclick = () => { if (tg?.openLink) tg.openLink(location.origin + location.pathname, { try_instant_view: false }); else toast('Плеер уже открыт в браузере. Включи «Фон» перед блокировкой экрана.'); };
+$('btn-fullscreen').onclick = async () => {
+  try {
+    if (tg?.isVersionAtLeast?.('8.0') && tg.requestFullscreen) { tg.isFullscreen ? tg.exitFullscreen() : tg.requestFullscreen(); }
+    else if (document.fullscreenElement) await document.exitFullscreen();
+    else if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen();
+    else if ($('player').webkitEnterFullscreen) $('player').webkitEnterFullscreen();
+    else toast('Полный экран недоступен в этом браузере');
+  } catch { toast('Полный экран недоступен'); }
+};
+if (navigator.mediaSession) {
+  const seekBy = (amount) => { const target = media(); if (Number.isFinite(target.duration)) target.currentTime = Math.max(0, Math.min(target.duration, target.currentTime + amount)); };
+  for (const [action, handler] of Object.entries({ play: tryPlay, pause: () => { state.want = false; state.loading = false; media().pause(); }, nexttrack: () => advance(), previoustrack: () => advance({ direction: -1 }), seekbackward: (event) => seekBy(-(event.seekOffset || 10)), seekforward: (event) => seekBy(event.seekOffset || 10), seekto: (event) => { if (Number.isFinite(event.seekTime) && Number.isFinite(media().duration)) media().currentTime = Math.max(0, Math.min(media().duration, event.seekTime)); } })) { try { navigator.mediaSession.setActionHandler(action, handler); } catch {} }
+}
+document.addEventListener('visibilitychange', () => { state.lastProgress = Date.now(); if (!document.hidden) void acquireWakeLock(); else releaseWakeLock(); });
+window.addEventListener('offline', () => { $('connection').textContent = 'Нет интернета'; status('НЕТ СЕТИ · ЖДЁМ ПОДКЛЮЧЕНИЯ'); });
+window.addEventListener('online', () => { void loadLibrary(); if (state.current && state.want) playVideo(state.current, { position: state.position }); });
+
+const deleting = new Set();
+async function removeVideo(video) {
+  if (deleting.has(video.name) || !await ensureAccess()) return;
+  deleting.add(video.name);
+  try {
+    await write(`/api/videos/${encodeURIComponent(video.name)}`, 'DELETE');
+    const wasCurrent = state.current?.name === video.name;
+    if (wasCurrent) {
+      const at = nextPlayable(state.queue, state.queue.findIndex((v) => v.name === video.name), new Set([...state.failed, video.file_id]));
+      if (at >= 0) playVideo(state.queue[at]);
+      else { state.want = false; state.loading = false; $('player').pause(); $('audio-player').pause(); state.current = null; $('placeholder').hidden = false; $('audio-cover').hidden = true; $('spinner').hidden = true; $('now-playing').textContent = 'Выбери эдит'; $('player').removeAttribute('src'); $('audio-player').removeAttribute('src'); $('player').load(); $('audio-player').load(); syncPlay(); }
+    }
+    state.videos = state.videos.filter((v) => v.name !== video.name);
+    for (const key of Object.keys(state.playlists)) state.playlists[key] = state.playlists[key].filter((name) => name !== video.name);
+    storage.set('player-library', { videos: state.videos, playlists: state.playlists }); renderSelects(); rebuildQueue();
+    toast('Эдит удалён из коллекции', async () => { await write(`/api/videos/${encodeURIComponent(video.name)}/restore`, 'POST'); await loadLibrary(); toast('Эдит восстановлен'); });
+  } catch (e) { toast(e.message); if (e.status === 401) { accessChecked = false; accessDialog(); } }
+  finally { deleting.delete(video.name); }
+}
+$('btn-delete-current').onclick = () => state.current ? removeVideo(state.current) : toast('Сначала выбери эдит');
+async function createPlaylist() {
+  if (!await ensureAccess()) return;
+  const body = showModal('Новый плейлист'), form = node('form'), input = node('input'), save = node('button', 'Создать', 'accent');
+  input.placeholder = 'Название плейлиста'; input.maxLength = 100; input.required = true; input.setAttribute('aria-label', 'Название плейлиста');
+  form.append(input, save); body.append(form);
+  form.onsubmit = async (event) => {
+    event.preventDefault(); const name = input.value.trim();
+    if (!name || ['__proto__', 'constructor', 'prototype'].includes(name) || Object.hasOwn(state.playlists, name)) { toast('Выбери другое название'); return; }
+    save.disabled = true;
+    try { const saved = await write(`/api/playlists/${encodeURIComponent(name)}`, 'POST'); state.playlists = saved.playlists; renderSelects(); $('playlist-select').value = name; rebuildQueue(); $('modal').close(); toast('Плейлист создан'); }
+    catch (e) { toast(e.message); } finally { save.disabled = false; }
+  };
+  input.focus();
+}
+$('btn-new-playlist').onclick = createPlaylist;
+$('btn-add').onclick = async () => {
+  if (!state.current) { toast('Сначала выбери эдит'); return; }
+  if (!await ensureAccess()) return;
+  const video = state.current, body = showModal('Добавить в плейлист');
+  for (const [name, list] of Object.entries(state.playlists)) {
+    const has = list.includes(video.name), button = node('button', `${has ? '✓ ' : '＋ '}${name}`);
+    button.onclick = async () => {
+      button.disabled = true;
+      try { const saved = await write(`/api/playlists/${encodeURIComponent(name)}/items`, 'POST', { name: video.name, present: !has }); state.playlists = saved.playlists; renderSelects(); rebuildQueue(); $('modal').close(); toast(has ? 'Убрано из плейлиста' : 'Добавлено в плейлист'); }
+      catch (e) { toast(e.message); button.disabled = false; }
+    };
+    body.append(button);
+  }
+  const create = node('button', '＋ Создать плейлист', 'accent'); create.onclick = createPlaylist; body.append(create);
 };
 
-// ── Шторка библиотеки (мобильная) ────────────────────────────
-const isMobile = () => window.matchMedia('(max-width: 760px)').matches;
-
-function openSheet() {
-  el.sidebar.classList.add('open');
-  el.backdrop.hidden = false;
-}
-
-function closeSheet() {
-  el.sidebar.classList.remove('open');
-  el.backdrop.hidden = true;
-}
-
-// ── Утилиты ──────────────────────────────────────────────────
-const fmtSize = (b) => (b / 1024 / 1024).toFixed(2) + ' MB';
-
-/** Дата из имени: tiktok_20260715_053426.mp4 → 2026-07-15 */
-function fmtDate(name) {
-  const m = name.match(/(\d{4})(\d{2})(\d{2})/);
-  return m ? `${m[1]}-${m[2]}-${m[3]}` : '';
-}
-
-let toastTimer;
-function toast(msg) {
-  el.toast.textContent = msg;
-  el.toast.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.toast.hidden = true; }, 2600);
-}
-
-function haptic(type = 'light') {
-  tg?.HapticFeedback?.impactOccurred?.(type);
-}
-
-// ── Загрузка библиотеки ──────────────────────────────────────
-// Render (бесплатный тариф) засыпает без запросов и просыпается до ~50 сек.
-// Раньше при открытии приложения именно в это окно loadLibrary() падала
-// один раз и молча оставляла пустой список — выглядело как "приложение
-// умерло", хотя сервер был жив и данные целы. Теперь: до 6 попыток с
-// растущей паузой, с явным статусом на экране вместо тишины.
-async function loadLibrary(attempt = 1) {
-  const MAX_ATTEMPTS = 6;
-
-  try {
-    const res = await fetch(`${API}/api/library`, { signal: AbortSignal.timeout(20_000) });
-
-    // 503 — сервер жив, но библиотека ещё грузится с GitHub (см. api-render/server.js)
-    if (res.status === 503) throw new Error('библиотека ещё загружается на сервере');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    const data = await res.json();
-
-    state.videos = Array.isArray(data.videos) ? data.videos : [];
-    state.playlists = data.playlists && typeof data.playlists === 'object' ? data.playlists : {};
-
-    renderPlaylistSelect();
-    rebuildQueue();
-    toast(`Загружено: ${state.videos.length} видео`);
-  } catch (e) {
-    if (attempt >= MAX_ATTEMPTS) {
-      toast(`Не загрузилось: ${e.message}. Нажми Refresh.`);
-      return;
+const uploads = [];
+let uploadsRunning = false;
+const uploadLabels = { queued: 'В очереди', uploading: 'Отправляем', processing: 'Подготавливаем MP4', sending: 'Сохраняем видео', saving: 'Добавляем в коллекцию', done: 'Готово', cancelled: 'Отменено', error: 'Не загрузилось' };
+function renderUploads() {
+  const fragment = document.createDocumentFragment();
+  for (const entry of uploads) {
+    const item = node('li', undefined, `upload-item ${entry.status}`), copy = node('div');
+    copy.append(node('strong', entry.name), node('small', entry.message || `${uploadLabels[entry.status]}${['uploading', 'processing'].includes(entry.status) ? ` · ${entry.progress || 0}%` : ''}`));
+    item.append(copy);
+    const progress = node('progress'); progress.max = 100; progress.value = entry.status === 'done' ? 100 : entry.progress || 0; item.append(progress);
+    if (entry.status === 'error' || entry.status === 'cancelled') {
+      if (entry.file) { const retry = node('button', 'Повторить'); retry.onclick = () => { entry.status = 'queued'; entry.message = ''; entry.jobId = null; entry.cancelled = false; renderUploads(); void runUploads(); }; item.append(retry); }
+    } else if (entry.status !== 'done' && entry.status !== 'saving') {
+      const cancel = node('button', 'Отмена'); cancel.onclick = () => { entry.cancelled = true; entry.xhr?.abort(); if (entry.jobId) void write(`/api/uploads/${entry.jobId}`, 'DELETE').catch((e) => toast(e.message)); if (entry.status === 'queued') entry.status = 'cancelled'; renderUploads(); }; item.append(cancel);
     }
-    const delay = Math.min(attempt * 4000, 15_000); // 4s, 8s, 12s, 15s, 15s
-    toast(`Сервер просыпается… попытка ${attempt}/${MAX_ATTEMPTS}`);
-    setTimeout(() => loadLibrary(attempt + 1), delay);
+    fragment.append(item);
   }
+  $('upload-list').replaceChildren(fragment);
 }
-
-// ── Плейлисты ────────────────────────────────────────────────
-function renderPlaylistSelect() {
-  const current = el.select.value || ALL;
-  el.select.innerHTML = '';
-
-  const optAll = document.createElement('option');
-  optAll.value = ALL;
-  optAll.textContent = `All Videos (${state.videos.length})`;
-  el.select.append(optAll);
-
-  for (const [name, items] of Object.entries(state.playlists)) {
-    const o = document.createElement('option');
-    o.value = name;
-    o.textContent = `${name} (${items.length})`;
-    el.select.append(o);
-  }
-
-  // не сбрасываем выбор пользователя при перерисовке
-  el.select.value = [...el.select.options].some((o) => o.value === current) ? current : ALL;
-}
-
-async function savePlaylists() {
-  try {
-    const res = await fetch(`${API}/api/playlists`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(state.playlists),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return true;
-  } catch (e) {
-    toast(`Не сохранилось: ${e.message}`);
-    return false;
-  }
-}
-
-// ── Очередь и список ─────────────────────────────────────────
-function rebuildQueue() {
-  const sel = el.select.value || ALL;
-  const q = el.search.value.trim().toLowerCase();
-
-  let items;
-  if (sel === ALL) {
-    items = [...state.videos];
-  } else {
-    // порядок берём из плейлиста, а не из библиотеки
-    const byName = new Map(state.videos.map((v) => [v.name, v]));
-    items = (state.playlists[sel] || []).map((n) => byName.get(n)).filter(Boolean);
-  }
-
-  if (q) items = items.filter((v) => v.name.toLowerCase().includes(q));
-
-  // сохраняем текущее видео при смене фильтра
-  const playingName = state.index >= 0 ? state.queue[state.index]?.name : null;
-  state.queue = items;
-  state.index = playingName ? items.findIndex((v) => v.name === playingName) : -1;
-
-  renderList();
-}
-
-function renderList() {
-  el.count.textContent = `(${state.queue.length})`;
-  el.list.innerHTML = '';
-
-  if (!state.queue.length) {
-    const li = document.createElement('li');
-    li.className = 'empty-note';
-    li.textContent = state.videos.length ? 'Ничего не найдено' : 'Библиотека пуста';
-    el.list.append(li);
-    return;
-  }
-
-  const frag = document.createDocumentFragment();
-
-  state.queue.forEach((v, i) => {
-    const li = document.createElement('li');
-    li.className = 'video-item' + (i === state.index ? ' active' : '');
-    li.tabIndex = 0;
-    li.dataset.index = String(i);
-
-    const dot = document.createElement('span');
-    dot.className = 'vi-dot';
-
-    const name = document.createElement('div');
-    name.className = 'vi-name';
-    name.textContent = v.name;
-
-    const meta = document.createElement('div');
-    meta.className = 'vi-meta';
-    meta.textContent = `${fmtSize(v.size)}  ${fmtDate(v.name)}`;
-
-    li.append(dot, name, meta);
-    frag.append(li);
+function sendFile(entry) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest(); entry.xhr = xhr;
+    xhr.open('POST', `${API}/api/uploads?name=${encodeURIComponent(entry.name)}&playlist=${encodeURIComponent(entry.playlist)}`);
+    xhr.timeout = 30 * 60 * 1000;
+    xhr.setRequestHeader('content-type', 'application/octet-stream');
+    for (const [key, value] of Object.entries(headers())) xhr.setRequestHeader(key, value);
+    xhr.upload.onprogress = (event) => { if (event.lengthComputable) { entry.progress = Math.round(event.loaded / event.total * 100); renderUploads(); } };
+    xhr.onload = () => { let result; try { result = JSON.parse(xhr.responseText); } catch { result = {}; } if (xhr.status >= 200 && xhr.status < 300) resolve(result); else reject(new Error(result.error || `Ошибка загрузки (${xhr.status})`)); };
+    xhr.onerror = () => reject(new Error('Соединение прервано. Повтори загрузку.'));
+    xhr.ontimeout = () => reject(new Error('Время загрузки истекло. Повтори при стабильном интернете.'));
+    xhr.onabort = () => reject(new Error('Загрузка отменена'));
+    xhr.send(entry.file);
   });
-
-  el.list.append(frag);
 }
-
-// ── Воспроизведение ──────────────────────────────────────────
-// Флаг: ждём достаточный буфер, прежде чем показать видео и запустить play.
-// Без этого браузер начинает играть с первых накачанных секунд и упирается
-// в подгрузку через 2-3 сек — рывок/подвисание. Ждём canplaythrough вместо
-// первого кадра: это означает "докачается без пауз на текущей скорости".
-let waitingForBuffer = false;
-let bufferTimeout;
-
-/** На части мобильных браузеров canplaythrough может не наступить вовсе
- *  (потоковое видео без Content-Length) — не зависаем на спиннере вечно. */
-function revealAndPlay() {
-  if (!waitingForBuffer) return;
-  waitingForBuffer = false;
-  clearTimeout(bufferTimeout);
-  el.player.classList.add('visible');
-  el.spinner.hidden = true;
-  el.player.play().catch(() => { /* автоплей может быть зарезан — не падаем */ });
-}
-
-function playIndex(i) {
-  if (i < 0 || i >= state.queue.length) return;
-
-  const v = state.queue[i];
-  state.index = i;
-
-  waitingForBuffer = true;
-  clearTimeout(bufferTimeout);
-  bufferTimeout = setTimeout(revealAndPlay, 8000);
-
-  el.spinner.hidden = false;
-  el.placeholder.style.display = 'none';
-  el.player.classList.remove('visible');   // не показываем, пока не готово
-
-  el.player.pause();
-  el.player.src = `${API}/api/video/${encodeURIComponent(v.file_id)}`;
-  el.player.loop = state.rpt1;          // RPT1 — нативный повтор, без дёрганья
-  el.player.volume = state.volume;
-  el.player.load();
-
-  el.now.textContent = v.name;
-  el.now.classList.add('playing');
-  renderList();
-
-  // подкрутить активный элемент в видимую область
-  el.list.querySelector('.video-item.active')?.scrollIntoView({ block: 'nearest' });
-}
-
-function next(auto = false) {
-  if (!state.queue.length) return;
-
-  const last = state.index >= state.queue.length - 1;
-  if (last && auto && !state.loop) return;   // конец списка без LOOP — стоп
-
-  playIndex(last ? 0 : state.index + 1);
-}
-
-function prev() {
-  if (!state.queue.length) return;
-  playIndex(state.index <= 0 ? state.queue.length - 1 : state.index - 1);
-}
-
-function togglePlay() {
-  if (state.index < 0) {
-    if (state.queue.length) playIndex(0);
-    return;
-  }
-  if (el.player.paused) el.player.play().catch(() => {});
-  else el.player.pause();
-}
-
-function syncPlayButton() {
-  const playing = state.index >= 0 && !el.player.paused;
-  el.play.textContent = playing ? '||' : '>';
-}
-
-// ── Модалка «добавить в плейлист» ────────────────────────────
-function openPlaylistModal() {
-  if (state.index < 0) { toast('Сначала выбери видео'); return; }
-
-  const video = state.queue[state.index];
-  el.modalTitle.textContent = `В плейлист: ${video.name}`;
-  el.modalBody.innerHTML = '';
-
-  const names = Object.keys(state.playlists);
-  if (!names.length) {
-    const note = document.createElement('div');
-    note.className = 'empty-note';
-    note.textContent = 'Плейлистов пока нет — создай через «+ New»';
-    el.modalBody.append(note);
-  }
-
-  for (const name of names) {
-    const has = state.playlists[name].includes(video.name);
-    const b = document.createElement('button');
-    b.className = 'pl-option';
-    b.textContent = `${has ? '✓ ' : ''}${name} (${state.playlists[name].length})`;
-    b.addEventListener('click', async () => {
-      const list = state.playlists[name];
-      const at = list.indexOf(video.name);
-      if (at >= 0) list.splice(at, 1); else list.unshift(video.name);
-
-      if (await savePlaylists()) {
-        toast(at >= 0 ? `Убрано из «${name}»` : `Добавлено в «${name}»`);
-        renderPlaylistSelect();
-        if (el.select.value === name) rebuildQueue();
-      }
-      closeModal();
-    });
-    el.modalBody.append(b);
-  }
-
-  el.modal.hidden = false;
-}
-
-const closeModal = () => { el.modal.hidden = true; };
-
-async function createPlaylist() {
-  const name = prompt('Название нового сундука:')?.trim();
-  if (!name) return;
-  if (state.playlists[name]) { toast('Такой уже есть'); return; }
-
-  state.playlists[name] = [];
-  if (await savePlaylists()) {
-    renderPlaylistSelect();
-    el.select.value = name;
-    rebuildQueue();
-    toast(`Плейлист «${name}» создан`);
+async function pollJob(entry) {
+  let failures = 0;
+  while (true) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    try {
+      const job = await request(`/api/uploads/${entry.jobId}`); failures = 0;
+      Object.assign(entry, { status: job.status, progress: job.progress, message: job.message || '' }); renderUploads();
+      if (job.status === 'done') { entry.file = null; await loadLibrary(); return; }
+      if (['error', 'cancelled'].includes(job.status)) return;
+    } catch (e) { if (e.status === 404 || ++failures >= 5) throw e; entry.message = 'Связь прервалась; проверяем результат…'; renderUploads(); }
   }
 }
-
-// ── События ──────────────────────────────────────────────────
-el.list.addEventListener('click', (e) => {
-  const item = e.target.closest('.video-item');
-  if (item) {
-    haptic();
-    playIndex(Number(item.dataset.index));
-    if (isMobile()) closeSheet();   // выбрал — шторка уходит, видно видео
-  }
-});
-
-el.libBtn.addEventListener('click', () => { haptic(); openSheet(); });
-el.backdrop.addEventListener('click', closeSheet);
-
-el.list.addEventListener('keydown', (e) => {
-  const item = e.target.closest('.video-item');
-  if (item && (e.key === 'Enter' || e.key === ' ')) {
-    e.preventDefault();
-    playIndex(Number(item.dataset.index));
-  }
-});
-
-// клик по видео = пауза (как в десктопной версии)
-el.player.addEventListener('click', () => { haptic(); togglePlay(); });
-
-el.player.addEventListener('ended', () => { if (!state.rpt1) next(true); });
-
-// Буфер достаточен для непрерывного воспроизведения — теперь показываем и играем
-el.player.addEventListener('canplaythrough', revealAndPlay);
-
-el.player.addEventListener('playing', () => { el.spinner.hidden = true; syncPlayButton(); });
-el.player.addEventListener('pause', syncPlayButton);
-el.player.addEventListener('play', syncPlayButton);
-// waiting срабатывает и во время нашего намеренного ожидания буфера —
-// не дёргаем спиннер повторно, он уже показан с самого playIndex().
-el.player.addEventListener('waiting', () => { if (!waitingForBuffer) el.spinner.hidden = false; });
-el.player.addEventListener('error', () => {
-  waitingForBuffer = false;
-  clearTimeout(bufferTimeout);
-  el.spinner.hidden = true;
-  toast(`Не удалось воспроизвести: ${state.queue[state.index]?.name ?? ''}`);
-});
-
-el.play.addEventListener('click', () => { haptic(); togglePlay(); });
-el.next.addEventListener('click', () => { haptic(); next(); });
-el.prev.addEventListener('click', () => { haptic(); prev(); });
-
-el.rpt1.addEventListener('click', () => {
-  state.rpt1 = !state.rpt1;
-  el.rpt1.classList.toggle('on', state.rpt1);
-  el.player.loop = state.rpt1;
-  haptic();
-});
-
-el.loop.addEventListener('click', () => {
-  state.loop = !state.loop;
-  el.loop.classList.toggle('on', state.loop);
-  haptic();
-});
-
-el.volume.addEventListener('input', () => {
-  state.volume = Number(el.volume.value) / 100;
-  el.player.volume = state.volume;
-  el.volVal.textContent = `${el.volume.value}%`;
-});
-
-el.select.addEventListener('change', rebuildQueue);
-el.refresh.addEventListener('click', () => { haptic(); loadLibrary(); });
-el.newPl.addEventListener('click', createPlaylist);
-el.add.addEventListener('click', openPlaylistModal);
-
-let tgFullscreen = false;
-
-// ВРЕМЕННО: показывает реальные размеры видео/контейнера — для диагностики
-// разного масштаба между обычным окном и fullscreen. Долгий тап/клик по "VOL".
-function debugVideoSizes() {
-  const wrapRect = el.player.parentElement.getBoundingClientRect();
-  const playerRect = el.player.getBoundingClientRect();
-  const cs = getComputedStyle(el.player);
-  const vw = el.player.videoWidth;
-  const vh = el.player.videoHeight;
-  const contW = wrapRect.width, contH = wrapRect.height;
-  const scale = Math.min(contW / vw, contH / vh);
-  const fitW = Math.round(vw * scale), fitH = Math.round(vh * scale);
-
-  // Реально видимая доля кадра. Если <1 — часть видео физически обрезана.
-  const visW = Math.min(playerRect.width, wrapRect.width, window.innerWidth);
-  const visH = Math.min(playerRect.height, wrapRect.height, window.innerHeight);
-  const clippedX = playerRect.left < wrapRect.left - 1 || playerRect.right > wrapRect.right + 1;
-  const clippedY = playerRect.top < wrapRect.top - 1 || playerRect.bottom > wrapRect.bottom + 1;
-
-  const msg =
-    `окно: ${window.innerWidth}x${window.innerHeight}\n` +
-    `контейнер rect: ${Math.round(wrapRect.width)}x${Math.round(wrapRect.height)} @ (${Math.round(wrapRect.left)},${Math.round(wrapRect.top)})\n` +
-    `видео файл: ${vw}x${vh}\n` +
-    `#player rect: ${Math.round(playerRect.width)}x${Math.round(playerRect.height)} @ (${Math.round(playerRect.left)},${Math.round(playerRect.top)})\n` +
-    `object-fit: ${cs.objectFit} | transform: ${cs.transform}\n` +
-    `ожидаемый кадр (contain): ${fitW}x${fitH}\n` +
-    `player ВЫХОДИТ за контейнер: X=${clippedX} Y=${clippedY}\n` +
-    `fullscreen: ${tgFullscreen || !!document.fullscreenElement}`;
-  alert(msg);
+async function runUploads() {
+  if (uploadsRunning) return;
+  uploadsRunning = true;
+  $('preload-player').removeAttribute('src'); $('preload-player').load(); preloaded = '';
+  try {
+    for (const entry of uploads) {
+      if (entry.status !== 'queued') continue;
+      entry.status = 'uploading'; entry.progress = 0; renderUploads();
+      try {
+        const job = await sendFile(entry); entry.xhr = null; entry.jobId = job.id; entry.status = job.status; entry.progress = 0;
+        try { sessionStorage.setItem('player-upload-job', JSON.stringify({ jobId: job.id, name: entry.name })); } catch {}
+        await pollJob(entry);
+        try { sessionStorage.removeItem('player-upload-job'); } catch {}
+      } catch (e) { entry.status = entry.cancelled ? 'cancelled' : 'error'; entry.message = e.message; }
+      renderUploads();
+    }
+  } finally { uploadsRunning = false; }
 }
-document.querySelector('.lbl')?.addEventListener('dblclick', debugVideoSizes);
-
-el.fullscreen.addEventListener('click', () => {
-  // Внутри Telegram — родной метод клиента: браузерный Fullscreen API
-  // в его вебвью часто заблокирован политикой хоста и молча не срабатывает.
-  if (tg?.requestFullscreen) {
-    if (tgFullscreen) tg.exitFullscreen();
-    else tg.requestFullscreen();
-    return;
+async function addFiles(files) {
+  if (!files.length || !await ensureAccess()) return;
+  for (const file of files) {
+    if (uploads.some((entry) => entry.name === file.name && !['done', 'error', 'cancelled'].includes(entry.status))) continue;
+    const message = !file.size ? 'Файл пуст' : file.size > 512 * 1048576 ? 'Файл больше 512 МБ' : !file.type.startsWith('video/') && !/\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(file.name) ? 'Выбери видеофайл' : '';
+    uploads.push({ name: file.name, file, status: message ? 'error' : 'queued', message, progress: 0, playlist: $('upload-playlist').value });
   }
-  // Открыто как обычная веб-страница — обычный браузерный API
-  if (document.fullscreenElement) document.exitFullscreen();
-  else document.documentElement.requestFullscreen().catch(() => toast('Полноэкранный режим недоступен'));
+  renderUploads(); void runUploads();
+}
+async function openUpload() { if (!await ensureAccess()) return; closeSheet(); $('upload-dialog').showModal(); }
+$('btn-upload').onclick = openUpload; $('btn-upload-mobile').onclick = openUpload;
+$('upload-close').onclick = () => $('upload-dialog').close();
+$('file-input').onchange = () => { void addFiles([...$('file-input').files]); $('file-input').value = ''; };
+for (const type of ['dragenter', 'dragover']) $('drop-zone').addEventListener(type, (e) => { e.preventDefault(); $('drop-zone').classList.add('dragging'); });
+for (const type of ['dragleave', 'drop']) $('drop-zone').addEventListener(type, (e) => { e.preventDefault(); $('drop-zone').classList.remove('dragging'); if (type === 'drop') void addFiles([...e.dataTransfer.files]); });
+window.addEventListener('beforeunload', (event) => { if (uploadsRunning) { event.preventDefault(); event.returnValue = ''; } });
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') { closeSheet(); closeSpeed(); return; }
+  if (event.target.closest('input, select, textarea, button, dialog')) return;
+  const actions = { ' ': togglePlay, ArrowRight: () => advance(), ArrowLeft: () => advance({ direction: -1 }) };
+  if (actions[event.key]) { event.preventDefault(); actions[event.key](); }
 });
-
-tg?.onEvent?.('fullscreenChanged', () => {
-  tgFullscreen = !!tg.isFullscreen;
-  el.fullscreen.textContent = tgFullscreen ? '⛶ Exit fullscreen' : '⛶ Fullscreen';
-});
-
-tg?.onEvent?.('fullscreenFailed', () => toast('Полноэкранный режим недоступен в этой версии Telegram'));
-
-document.addEventListener('fullscreenchange', () => {
-  if (tg?.requestFullscreen) return;   // управляется событиями tg выше
-  el.fullscreen.textContent = document.fullscreenElement ? '⛶ Exit fullscreen' : '⛶ Fullscreen';
-});
-el.modalCancel.addEventListener('click', closeModal);
-el.modal.addEventListener('click', (e) => { if (e.target === el.modal) closeModal(); });
-
-let searchTimer;
-el.search.addEventListener('input', () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(rebuildQueue, 180);
-});
-
-// Горячие клавиши — только когда фокус не в поле ввода
-document.addEventListener('keydown', (e) => {
-  if (e.target.matches('input, select, textarea')) return;
-
-  const actions = {
-    ' ': togglePlay,
-    ArrowRight: () => next(),
-    ArrowLeft: prev,
-    Escape: () => { closeModal(); closeSheet(); },
-  };
-  const fn = actions[e.key];
-  if (fn) { e.preventDefault(); fn(); }
-});
-
-// ── Старт ────────────────────────────────────────────────────
 if (tg) {
-  tg.ready();
-  tg.expand();
-  tg.setHeaderColor?.('#0f1115');
-  tg.setBackgroundColor?.('#0f1115');
-  tg.disableVerticalSwipes?.();   // свайп вниз не должен закрывать приложение во время просмотра
+  tg.ready?.(); tg.expand?.();
+  try { tg.setHeaderColor?.('#1b211c'); tg.setBackgroundColor?.('#141917'); if (tg.isVersionAtLeast?.('7.7')) tg.disableVerticalSwipes?.(); } catch {}
+  const insets = () => document.documentElement.style.setProperty('--tg-top', `${(tg.safeAreaInset?.top || 0) + (tg.contentSafeAreaInset?.top || 0)}px`);
+  insets(); tg.onEvent?.('safeAreaChanged', insets); tg.onEvent?.('contentSafeAreaChanged', insets);
 }
-
-el.player.volume = state.volume;
-loadLibrary();
+applyMediaSettings(); applyLibrary(storage.get('player-library', null)); void loadLibrary();
+try {
+  const pending = JSON.parse(sessionStorage.getItem('player-upload-job') || 'null');
+  if (pending?.jobId && (accessKey || tg?.initData)) { const entry = { ...pending, status: 'processing', progress: 0 }; uploads.push(entry); void pollJob(entry).then(() => sessionStorage.removeItem('player-upload-job')).catch((e) => { entry.status = 'error'; entry.message = e.message; renderUploads(); }); }
+} catch {}
