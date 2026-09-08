@@ -7,8 +7,8 @@ const storage = { get(key, fallback) { try { return JSON.parse(localStorage.getI
 let accessKey = '';
 try { accessKey = sessionStorage.getItem('player-access') || ''; } catch {}
 const prefs = storage.get('player-preferences', {});
-const state = { videos: [], playlists: {}, queue: [], current: null, failed: new Set(), rate: clampRate(prefs.rate), volume: Number.isFinite(prefs.volume) ? Math.max(0, Math.min(1, prefs.volume)) : .7, rpt1: !!prefs.rpt1, loop: prefs.loop !== false, audio: false, want: false, loading: false, retry: 0, generation: 0, lastProgress: Date.now(), position: 0 };
-const media = () => state.audio ? $('audio-player') : $('player');
+const state = { videos: [], playlists: {}, queue: [], current: null, failed: new Set(), rate: clampRate(prefs.rate), volume: Number.isFinite(prefs.volume) ? Math.max(0, Math.min(1, prefs.volume)) : .7, rpt1: !!prefs.rpt1, loop: prefs.loop !== false, want: false, loading: false, retry: 0, generation: 0, lastProgress: Date.now(), position: 0 };
+const media = () => $('player');
 const savePrefs = () => storage.set('player-preferences', { rate: state.rate, volume: state.volume, rpt1: state.rpt1, loop: state.loop });
 const time = (seconds) => Number.isFinite(seconds) ? `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}` : '0:00';
 const size = (bytes) => `${(bytes / 1048576).toFixed(1)} МБ`;
@@ -152,8 +152,9 @@ $('btn-refresh').onclick = loadLibrary;
 
 let preloaded = '', wakeLock;
 function applyMediaSettings() {
-  for (const target of [$('player'), $('audio-player')]) { target.volume = state.volume; target.defaultPlaybackRate = state.rate; target.playbackRate = state.rate; target.loop = state.rpt1; }
-  for (const [id, value] of [['btn-rpt1', state.rpt1], ['btn-loop', state.loop], ['btn-audio', state.audio]]) $(id).setAttribute('aria-pressed', String(value));
+  const target = media();
+  target.volume = state.volume; target.defaultPlaybackRate = state.rate; target.playbackRate = state.rate; target.loop = state.rpt1;
+  for (const [id, value] of [['btn-rpt1', state.rpt1], ['btn-loop', state.loop]]) $(id).setAttribute('aria-pressed', String(value));
   $('btn-speed').textContent = `${state.rate}×`; $('speed-value').textContent = `${state.rate}×`; $('volume').value = state.volume * 100;
   for (const button of $('speed-presets').children) button.setAttribute('aria-pressed', String(Number(button.dataset.rate) === state.rate));
 }
@@ -172,7 +173,7 @@ function syncPlay() {
   updateSession();
 }
 async function acquireWakeLock() {
-  if (!state.audio && !media().paused && document.visibilityState === 'visible' && !wakeLock) { try { wakeLock = await navigator.wakeLock?.request('screen'); wakeLock?.addEventListener('release', () => { wakeLock = null; }); } catch {} }
+  if (!media().paused && document.visibilityState === 'visible' && !wakeLock) { try { wakeLock = await navigator.wakeLock?.request('screen'); wakeLock?.addEventListener('release', () => { wakeLock = null; }); } catch {} }
 }
 function releaseWakeLock() { void wakeLock?.release().catch(() => {}); wakeLock = null; }
 function tryPlay() {
@@ -187,12 +188,12 @@ function tryPlay() {
 }
 function playVideo(video, { retry = false, position = 0, autoplay = true } = {}) {
   state.generation++; state.loading = true;
-  $('player').pause(); $('audio-player').pause();
+  media().pause();
   state.current = video; state.retry = retry ? state.retry + 1 : 0; state.position = position; state.lastProgress = Date.now(); state.want = autoplay;
   const target = media();
   target.src = `${API}/api/video/${encodeURIComponent(video.file_id)}`;
   applyMediaSettings(); target.load();
-  $('player').classList.remove('visible'); $('placeholder').hidden = true; $('audio-cover').hidden = !state.audio; $('spinner').hidden = !autoplay;
+  $('player').classList.remove('visible'); $('placeholder').hidden = true; $('spinner').hidden = !autoplay;
   $('now-playing').textContent = video.name; $('current-time').textContent = time(position); $('duration').textContent = time(video.duration); $('seek').value = 0; $('seek').disabled = true;
   status(autoplay ? 'ЗАГРУЖАЕМ ЭДИТ' : 'ПАУЗА'); updateActive();
   if (navigator.mediaSession && window.MediaMetadata) navigator.mediaSession.metadata = new MediaMetadata({ title: video.name.replace(/\.[^.]+$/, ''), artist: 'Тайник', album: $('playlist-select').value === ALL ? 'Коллекция эдитов' : $('playlist-select').value });
@@ -230,7 +231,7 @@ function togglePlay() {
   else { state.want = false; state.loading = false; media().pause(); $('spinner').hidden = true; status('ПАУЗА'); }
 }
 function preloadNext() {
-  if (uploadsRunning || state.audio || navigator.connection?.saveData || /2g/.test(navigator.connection?.effectiveType || '') || !state.current) return;
+  if (uploadsRunning || navigator.connection?.saveData || /2g/.test(navigator.connection?.effectiveType || '') || !state.current) return;
   const target = media(), duration = target.duration;
   if (!Number.isFinite(duration) || !target.buffered.length || target.buffered.end(target.buffered.length - 1) < duration - 1) return;
   const at = nextPlayable(state.queue, state.queue.findIndex((v) => v.name === state.current.name), state.failed, { wrap: state.loop });
@@ -240,7 +241,8 @@ function preloadNext() {
   $('preload-player').src = `${API}/api/video/${encodeURIComponent(next.file_id)}`;
   $('preload-player').load();
 }
-for (const target of [$('player'), $('audio-player')]) {
+{
+  const target = media();
   const active = (callback) => () => { if (target === media()) callback(); };
   target.addEventListener('loadedmetadata', active(() => {
     applyMediaSettings();
@@ -248,7 +250,7 @@ for (const target of [$('player'), $('audio-player')]) {
     $('duration').textContent = time(target.duration); $('seek').disabled = !Number.isFinite(target.duration);
   }));
   target.addEventListener('loadeddata', active(() => { $('player').classList.add('visible'); }));
-  target.addEventListener('playing', active(() => { state.loading = false; state.lastProgress = Date.now(); $('spinner').hidden = true; $('player').classList.add('visible'); status(state.audio ? 'ИГРАЕТ В ФОНОВОМ РЕЖИМЕ' : 'СЕЙЧАС ИГРАЕТ'); syncPlay(); void acquireWakeLock(); }));
+  target.addEventListener('playing', active(() => { state.loading = false; state.lastProgress = Date.now(); $('spinner').hidden = true; $('player').classList.add('visible'); status('СЕЙЧАС ИГРАЕТ'); syncPlay(); void acquireWakeLock(); }));
   target.addEventListener('play', active(syncPlay));
   target.addEventListener('pause', active(() => { syncPlay(); releaseWakeLock(); if (!state.loading && !target.ended && !target.error && state.current && !state.failed.has(state.current.file_id)) { state.want = false; status('ПАУЗА'); } }));
   target.addEventListener('waiting', active(() => { if (state.want) { $('spinner').hidden = false; status('БУФЕРИЗАЦИЯ…'); } }));
@@ -278,14 +280,6 @@ $('speed-minus').onclick = () => setRate(state.rate - .1); $('speed-plus').oncli
 const closeSpeed = () => { $('speed-panel').hidden = true; $('btn-speed').setAttribute('aria-expanded', 'false'); };
 $('btn-speed').onclick = () => { $('speed-panel').hidden = !$('speed-panel').hidden; $('btn-speed').setAttribute('aria-expanded', String(!$('speed-panel').hidden)); };
 document.addEventListener('click', (event) => { if (!event.target.closest('.speed-anchor')) closeSpeed(); });
-$('btn-audio').onclick = () => {
-  const position = media().currentTime || 0, autoplay = !media().paused;
-  state.loading = true; media().pause(); state.audio = !state.audio;
-  $('background-note').hidden = !state.audio; releaseWakeLock();
-  if (state.current) playVideo(state.current, { position, autoplay });
-  else { state.loading = false; applyMediaSettings(); }
-};
-$('btn-browser').onclick = () => { if (tg?.openLink) tg.openLink(location.origin + location.pathname, { try_instant_view: false }); else toast('Плеер уже открыт в браузере. Включи «Фон» перед блокировкой экрана.'); };
 $('btn-fullscreen').onclick = async () => {
   try {
     if (tg?.isVersionAtLeast?.('8.0') && tg.requestFullscreen) { tg.isFullscreen ? tg.exitFullscreen() : tg.requestFullscreen(); }
@@ -313,7 +307,7 @@ async function removeVideo(video) {
     if (wasCurrent) {
       const at = nextPlayable(state.queue, state.queue.findIndex((v) => v.name === video.name), new Set([...state.failed, video.file_id]));
       if (at >= 0) playVideo(state.queue[at]);
-      else { state.want = false; state.loading = false; $('player').pause(); $('audio-player').pause(); state.current = null; $('placeholder').hidden = false; $('audio-cover').hidden = true; $('spinner').hidden = true; $('now-playing').textContent = 'Выбери эдит'; $('player').removeAttribute('src'); $('audio-player').removeAttribute('src'); $('player').load(); $('audio-player').load(); syncPlay(); }
+      else { state.want = false; state.loading = false; media().pause(); state.current = null; $('placeholder').hidden = false; $('spinner').hidden = true; $('now-playing').textContent = 'Выбери эдит'; media().removeAttribute('src'); media().load(); syncPlay(); }
     }
     state.videos = state.videos.filter((v) => v.name !== video.name);
     for (const key of Object.keys(state.playlists)) state.playlists[key] = state.playlists[key].filter((name) => name !== video.name);
@@ -447,7 +441,7 @@ document.addEventListener('keydown', (event) => {
 });
 if (tg) {
   tg.ready?.(); tg.expand?.();
-  try { tg.setHeaderColor?.('#1b211c'); tg.setBackgroundColor?.('#141917'); if (tg.isVersionAtLeast?.('7.7')) tg.disableVerticalSwipes?.(); } catch {}
+  try { tg.setHeaderColor?.('#000000'); tg.setBackgroundColor?.('#000000'); if (tg.isVersionAtLeast?.('7.10')) tg.setBottomBarColor?.('#000000'); if (tg.isVersionAtLeast?.('7.7')) tg.disableVerticalSwipes?.(); } catch {}
   const insets = () => document.documentElement.style.setProperty('--tg-top', `${(tg.safeAreaInset?.top || 0) + (tg.contentSafeAreaInset?.top || 0)}px`);
   insets(); tg.onEvent?.('safeAreaChanged', insets); tg.onEvent?.('contentSafeAreaChanged', insets);
 }
