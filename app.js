@@ -365,7 +365,7 @@ function renderUploads() {
     item.append(copy);
     const progress = node('progress'); progress.max = 100; progress.value = entry.status === 'done' ? 100 : entry.progress || 0; item.append(progress);
     if (entry.status === 'error' || entry.status === 'cancelled') {
-      if (entry.file) { const retry = node('button', 'Повторить'); retry.onclick = () => { entry.status = 'queued'; entry.message = ''; entry.jobId = null; entry.cancelled = false; renderUploads(); void runUploads(); }; item.append(retry); }
+      if (entry.file && !entry.invalid) { const retry = node('button', 'Повторить'); retry.onclick = () => { entry.status = 'queued'; entry.message = ''; entry.jobId = null; entry.cancelled = false; renderUploads(); void runUploads(); }; item.append(retry); }
     } else if (entry.status !== 'done' && entry.status !== 'saving') {
       const cancel = node('button', 'Отмена'); cancel.onclick = () => { entry.cancelled = true; entry.xhr?.abort(); if (entry.jobId) void write(`/api/uploads/${entry.jobId}`, 'DELETE').catch((e) => toast(e.message)); if (entry.status === 'queued') entry.status = 'cancelled'; renderUploads(); }; item.append(cancel);
     }
@@ -423,7 +423,12 @@ async function addFiles(files) {
   for (const file of files) {
     if (uploads.some((entry) => entry.name === file.name && !['done', 'error', 'cancelled'].includes(entry.status))) continue;
     const message = !file.size ? 'Файл пуст' : file.size > 512 * 1048576 ? 'Файл больше 512 МБ' : !file.type.startsWith('video/') && !/\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(file.name) ? 'Выбери видеофайл' : '';
-    uploads.push({ name: file.name, file, status: message ? 'error' : 'queued', message, progress: 0, playlist: $('upload-playlist').value });
+    let name = file.name, copy = 2;
+    const extension = /\.[^.]+$/.exec(file.name)?.[0] || '';
+    const stem = file.name.slice(0, file.name.length - extension.length);
+    const used = new Set([...state.videos.map((video) => video.name), ...uploads.filter((entry) => !['error', 'cancelled'].includes(entry.status)).map((entry) => entry.name)]);
+    while (used.has(name)) name = `${stem} (${copy++})${extension}`;
+    uploads.push({ name, file, status: message ? 'error' : 'queued', invalid: !!message, message, progress: 0, playlist: $('upload-playlist').value });
   }
   renderUploads(); void runUploads();
 }
